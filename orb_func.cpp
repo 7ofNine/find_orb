@@ -3902,12 +3902,16 @@ static double find_sungrazer_orbit( OBSERVE FAR *obs, int n_obs, double *orbit)
          if( !find_parabolic_orbit( obs, n_obs, temp_orbit, direction))
             {
             ELEMENTS elem;
+            double ecliptic_lon, ecliptic_lat;
+
             double score;
 
             elem.gm = SOLAR_GM;
             calc_classical_elements( &elem, temp_orbit, obs[0].jd, 1);
-            score = 10. * fabs( elem.ecc - 1.) + fabs( elem.incl * 180. / PI - 144.);
-            if( best_score > score)
+            get_periapsis_loc( &ecliptic_lon, &ecliptic_lat, &elem);
+            score = fabs( ecliptic_lon - 282.81 * PI / 180.)
+                  + fabs( ecliptic_lat - 35.22 * PI / 180.);
+            if( best_score > score && elem.incl > PI / 2.)
                {
                best_score = score;
                memcpy( orbit, temp_orbit, 6 * sizeof( double));
@@ -4064,6 +4068,8 @@ double initial_orbit( OBSERVE FAR *obs, int n_obs, double *orbit)
    if( debug_level)
       debug_printf( "initial_orbit(): %d obs;", n_obs);
    assert( orbit);
+   n_radar_obs = sort_unused_obs_to_end( obs, n_obs);
+   n_obs -= n_radar_obs;
    for( i = 0; i < n_obs; i++)
       {
       obs[i].computed_ra  = obs[i].ra;
@@ -4132,23 +4138,24 @@ double initial_orbit( OBSERVE FAR *obs, int n_obs, double *orbit)
          {               /* accept the SR solution */
          const double epoch_shown = find_epoch_shown( obs, n_obs);
 
+         orbit_epoch = obs[0].jd;
          for( i = 0; i < (int)n_sr_orbits; i++)
             memcpy( sr_orbits + i * 6, sr[i].orbit, 6 * sizeof( double));
          free( sr);
          find_median_orbit( sr_orbits, n_sr_orbits);
          memcpy( orbit, sr_orbits, 6 * sizeof( double));
-         compute_sr_sigmas( sr_orbits, n_sr_orbits, obs[0].jd, epoch_shown);
+         compute_sr_sigmas( sr_orbits, n_sr_orbits, orbit_epoch, epoch_shown);
+         n_obs += n_radar_obs;
+         shellsort_r( obs, n_obs, sizeof( OBSERVE), compare_observations, NULL);
          available_sigmas_hash = compute_available_sigmas_hash( obs, n_obs,
                      epoch_shown, perturbers, 0);
-         set_locs( orbit, obs[0].jd, obs, n_obs);
+         set_locs( orbit, orbit_epoch, obs, n_obs);
          integration_timeout = 0;
-         return( obs[0].jd);
+         return( orbit_epoch);
          }
       free( sr);
       }
 
-   n_radar_obs = sort_unused_obs_to_end( obs, n_obs);
-   n_obs -= n_radar_obs;
    while( best_score > acceptable_score_limit)
       {
       int end, n_subarc_obs, n_geocentric_obs = 0;
