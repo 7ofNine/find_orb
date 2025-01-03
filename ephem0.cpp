@@ -2933,6 +2933,8 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                         ecliptic_to_equatorial( vect);   /* mpc_obs.cpp */
                         fraction_illum = shadow_check( earth_loc, orbi_after_light_lag,
                                     EARTH_RADIUS_IN_AU);
+                        fraction_illum *= shadow_check( moon_loc, orbi_after_light_lag,
+                                    LUNAR_RADIUS_IN_AU);
                         if( moon_dist)
                            cos_elong = dot_product( vect, topo)
                                         / (moon_dist * vector3_length( topo));
@@ -3566,7 +3568,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
                         lat_lon[0] * 180. / PI,
                         lat_lon[1] * 180. / PI,
                         alt_in_meters / meters_per_km);
-                  tbuff[30] = '\0';
+                  tbuff[29] = '\0';
                   strlcat_error( alt_buff, tbuff);
                   strlcat_error( buff, tbuff);
                   }
@@ -4526,6 +4528,10 @@ static void add_final_period( char *buff)
       strcat( buff, ".");
 }
 
+#define NAME_LIST_SIZE 300
+   /* size after adding 'Observers',  'Measurers',  &c */
+#define PADDED_NAME_LIST_SIZE 320
+
 static void tack_on_names( char *list, const char *names)
 {
    while( *names)
@@ -4541,7 +4547,7 @@ static void tack_on_names( char *list, const char *names)
             if( !memcmp( list + i, names, len))
                if( list[i + len] == ',' || !list[i + len])
                   already_in_list = 1;
-      if( !already_in_list)
+      if( !already_in_list && strlen( list) + len + 3 < NAME_LIST_SIZE)
          {
          char *lptr;
 
@@ -4643,7 +4649,7 @@ static int get_observer_details( const char *observation_filename,
             if( use_lines && !memcmp( buff, "MEA ", 4) && getting_measurers)
                tack_on_names( measurers, buff + 4);
             if( use_lines && !memcmp( buff, "TEL ", 4) && getting_scopes)
-               strcat( scope, buff + 4);
+               strlcpy_err( scope, buff + 4, 60);
             if( !memcmp( buff, "COD ", 4))
                if( !get_details_from_here( buff, mpc_code, prog_codes))
                   new_code_found = true;
@@ -4749,7 +4755,7 @@ static int write_observer_data_to_file( FILE *ofile, const char *ast_filename,
    for( i = 0; i < n_stations; i++)
       {
       char buff[200], tbuff[100];
-      char details[4][310];
+      char details[4][PADDED_NAME_LIST_SIZE];
       char program_codes[30];
       size_t loc, n_program_codes = 0;
       const char *allowable_codes = "0123456789!\"#$%&'()*+,-./[\\]^_`{|}~";
