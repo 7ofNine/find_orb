@@ -399,6 +399,19 @@ int integrate_orbitl( long double *orbit, const long double t0, const long doubl
 
    assert( fabsl( t0) < 1e+9);
    assert( fabsl( t1) < 1e+9);
+   if( force_model == FORCE_MODEL_DELTA_V)
+      if( (t0 > orbit[9] && t1 < orbit[9]) || (t1 > orbit[9] && t0 < orbit[9]))
+         {                 /* integrate to time of maneuver & add delta-v */
+         size_t i;
+
+         integrate_orbitl( orbit, t0, orbit[9]);
+         for( i = 0; i < 3; i++)
+            if( t0 < t1)      /* integrating forward,  add delta-v; */
+               orbit[i + 3] += orbit[i + 6] * seconds_per_day / AU_IN_METERS;
+            else              /* integrating backward,  subtract it */
+               orbit[i + 3] -= orbit[i + 6] * seconds_per_day / AU_IN_METERS;
+         t = orbit[9];        /* now integrate from maneuver time to t2 */
+         }
    if( use_encke == -1)
       use_encke = atoi( get_environment_ptr( "ENCKE"));
    if( t0 > maximum_jd || t1 > maximum_jd
@@ -2371,11 +2384,15 @@ static int evaluate_limited_orbit( const double *orbit,
                constraints[rval++] = 1. / elem.major_axis - 1. / value;
                break;
             case 'A':            /* area/mass ratio */
-               if( n_orbit_params >= 7)
-                  constraints[rval++] =
-                      10000. * (orbit[6] * SOLAR_GM / SRP1AU - value);
-               if( n_orbit_params > 7)
-                  constraints[rval - 1] *= 100000.;
+               if( force_model != FORCE_MODEL_NO_NONGRAVS
+                                    && force_model != FORCE_MODEL_DELTA_V)
+                  {
+                  if( n_orbit_params >= 7)
+                     constraints[rval++] =
+                         10000. * (orbit[6] * SOLAR_GM / SRP1AU - value);
+                  if( n_orbit_params > 7)
+                     constraints[rval - 1] *= 100000.;
+                  }
                break;
             case '1': case '2': case '3':
                constraints[rval++] = 1e+10 * (orbit[6 + variable - '1'] - value);
