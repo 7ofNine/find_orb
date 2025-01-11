@@ -93,6 +93,7 @@ int find_best_fit_planet( const double jd, const double *ivect,
                                  double *rel_vect);         /* runge.cpp */
 void find_relative_state_vect( const double jd, const double *ivect,
                double *ovect, const int ref_planet);        /* runge.cpp */
+void compute_effective_solar_multiplier( const char *constraints);   /* runge.c */
 int get_orbit_from_mpcorb_sof( const char *object_name, double *orbit,
              ELEMENTS *elems, const double full_arc_len, double *max_resid);
 const char *get_environment_ptr( const char *env_ptr);     /* mpc_obs.cpp */
@@ -2101,7 +2102,25 @@ int write_out_elements_to_file( const double *orbit,
                if( showing_sigmas)
                   if( !get_uncertainty( sig_name, sigma_buff + 4, false))
                      format_value_with_sigma( tbuff0, orbit[j + 6], sigma_buff + 4);
-               if( j == 3)
+               if( force_model == FORCE_MODEL_DELTA_V)
+                  {
+                  strlcpy_error( addenda, "T0: ");
+                  if( j < 3)              /* dx, dy, or dz */
+                     {
+                     addenda[0] = 'd';
+                     addenda[1] = 'x' + j;
+                     }
+                  else
+                     {
+                     full_ctime( tbuff0, orbit[9], CALENDAR_JULIAN_GREGORIAN
+                               | FULL_CTIME_YMD | FULL_CTIME_LEADING_ZEROES | FULL_CTIME_MILLIDAYS);
+                     snprintf_append( tbuff0, sizeof( tbuff0), " +/- %s", sigma_buff + 4);
+                     }
+                  strlcat_error( addenda, tbuff0);
+                  if( j == 2)
+                     strlcat_error( addenda, " m/s");
+                  }
+               else if( j == 3)
                   snprintf_err( addenda, sizeof( addenda), "DT: %s", tbuff0);
                else
                   {
@@ -3557,6 +3576,7 @@ OBSERVE FAR *load_object( FILE *ifile, OBJECT_INFO *id,
       excluded_asteroid_number = atoi( id->obj_name + 1);      /* itself */
    else
       excluded_asteroid_number = 0;
+   compute_effective_solar_multiplier( NULL);
    if( n_obs_actually_loaded > 0)
       {
       const int got_vector = fetch_previous_solution( obs, id->n_obs, orbit,
