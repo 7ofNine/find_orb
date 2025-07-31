@@ -180,9 +180,9 @@ int debug_printf( const char *format, ...)                 /* mpc_obs.cpp */
 #endif
 ;
 
-/* Old MSVCs and OpenWATCOM lack erf() and many other math functions: */
+/* erf() and many other math functions were added in C++11. */
 
-#if defined( _MSC_VER) && (_MSC_VER < 1800) || defined( __WATCOMC__)
+#if( __cplusplus < 201103L)
 double erf( double x);     /* orb_fun2.cpp */
 #endif
 
@@ -2104,6 +2104,8 @@ int write_out_elements_to_file( const double *orbit,
                      format_value_with_sigma( tbuff0, orbit[j + 6], sigma_buff + 4);
                if( force_model == FORCE_MODEL_DELTA_V)
                   {
+                  size_t k;
+
                   strlcpy_error( addenda, "T0: ");
                   if( j < 3)              /* dx, dy, or dz */
                      {
@@ -2119,6 +2121,9 @@ int write_out_elements_to_file( const double *orbit,
                   strlcat_error( addenda, tbuff0);
                   if( j == 2)
                      strlcat_error( addenda, " m/s");
+                  for( k = 0; addenda[k]; k++)
+                     while( addenda[k] == ' ' && addenda[k + 1] == ' ')
+                        memmove( addenda + k, addenda + k + 1, strlen( addenda + k));
                   }
                else if( j == 3)
                   snprintf_err( addenda, sizeof( addenda), "DT: %s", tbuff0);
@@ -3118,9 +3123,9 @@ static double extract_state_vect_from_text( const char *text,
          {
          extern int n_orbit_params;
 
-         n_orbit_params = 6 + text[1] - '1';
+         n_orbit_params = 6 + text[1] - '0';
          force_model = ((n_orbit_params - 6) | 0x10);   /* assume inverse square for the nonce */
-         orbit[n_orbit_params - 7] = atof( text + 3);
+         orbit[n_orbit_params - 1] = atof( text + 3);
          }
       while( *text != ',' && *text)
          text++;
@@ -3214,7 +3219,7 @@ double mid_epoch_of_arc( const OBSERVE *obs, const int n_obs)
    return( (obs[first].jd + obs[last].jd) / 2.);
 }
 
-static void _reset_sr_orbits( void)
+void reset_sr_orbits( void)
 {
    extern double *sr_orbits;
    extern unsigned max_n_sr_orbits;
@@ -3381,11 +3386,11 @@ static int fetch_previous_solution( OBSERVE *obs, const int n_obs, double *orbit
       ignore_prev_solns = 1;
       debug_printf( "%s failed; trying more SR orbits\n", obs->packed_id);
       max_n_sr_orbits *= 5;
-      _reset_sr_orbits( );
+      reset_sr_orbits( );
       got_vectors = fetch_previous_solution( obs, n_obs, orbit, orbit_epoch,
                         epoch_shown);
       max_n_sr_orbits /= 5;
-      _reset_sr_orbits( );
+      reset_sr_orbits( );
       ignore_prev_solns = 0;
       }
    return( got_vectors);
@@ -4131,7 +4136,7 @@ int get_defaults( ephem_option_t *ephemeris_output_options, int *element_format,
    max_n_sr_orbits = atoi( get_environment_ptr( "MAX_SR_ORBITS"));
    if( !max_n_sr_orbits)
       max_n_sr_orbits = 500;
-   _reset_sr_orbits( );
+   reset_sr_orbits( );
    sscanf( get_environment_ptr( "PERTURBERS"), "%x", &always_included_perturbers);
    if( *albedo)
       optical_albedo = atof( albedo);

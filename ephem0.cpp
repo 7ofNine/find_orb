@@ -33,7 +33,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 #include <stdlib.h>
 #include <time.h>
 #include <ctype.h>
-#include <assert.h>
+#include "assert2.h"
 #include <stdbool.h>
 #include "watdefs.h"
 #include "afuncs.h"
@@ -358,6 +358,20 @@ planets as well. */
 double find_lat_lon_alt( const double ut, const double *ivect,
                   const int planet_no, double *lat_lon, const bool geometric);
 
+double seconds_per_time_unit_symbol( const char *symbol)
+{
+   size_t i;
+   const char *units = "smhdwy";
+   const double rvals[6] = { 1., 60., seconds_per_hour, seconds_per_day,
+               7. * seconds_per_day, 365.25 * seconds_per_day };
+
+   for( i = 0; units[i]; i++)
+      if( *symbol == units[i])
+         return( rvals[i]);
+   assert( 0);
+   return 0.;
+}
+
 /* 'get_step_size' parses input text to get a step size in days,  so that */
 /* '4h' becomes .16667 days,  '30m' becomes 1/48 day,  and '10s' becomes  */
 /* 10/(24*60*60) days.  The units (days, hours, minutes,  or seconds) are */
@@ -404,26 +418,7 @@ double get_step_size( const char *stepsize, char *step_units, int *step_digits)
          units = tolower( units);
          if( step_units)
             *step_units = units;
-         switch( units)
-            {
-            case 'd':
-               break;
-            case 'h':
-               step /= hours_per_day;
-               break;
-            case 'm':
-               step /= minutes_per_day;
-               break;
-            case 's':
-               step /= seconds_per_day;
-               break;
-            case 'w':
-               step *= 7.;
-               break;
-            case 'y':
-               step *= 365.25;
-               break;
-            }
+         step *= seconds_per_time_unit_symbol( &units) / seconds_per_day;
          }
    return( step);
 }
@@ -554,11 +549,9 @@ static int put_ephemeris_posn_angle_sigma( char *obuff, const double dist,
    return( integer_posn_ang);
 }
 
-/* Old MSVCs and OpenWATCOM lack erf() and many other math functions: */
-
-#if defined( _MSC_VER) && (_MSC_VER < 1800) || defined( __WATCOMC__)
-double erf( double x);     /* orb_fun2.cpp */
-#endif
+#if( __cplusplus < 201103L)
+double erf( double x);   /* orb_fun2.cpp : replacement for */
+#endif                  /* pre-C99 or pre-C++11 */
 
 #define SWAP( A, B, TEMP)   { TEMP = A;  A = B;  B = TEMP; }
 
@@ -1227,6 +1220,8 @@ static void format_motion( char *buff, const double motion)
 
    if( fabs_motion > 999999.)
       motion_format = "-------";
+   else if( fabs_motion > 9999.)
+      motion_format = "%7.0f";
    else if( fabs_motion > 999.)
       motion_format = "%7.1f";
    else if( fabs_motion > 99.9)
@@ -1381,20 +1376,29 @@ static inline void clean_up_json_number( char *out_text)
 static double get_motion_unit_text( char *obuff)
 {
    double motion_units = 1.;
+   const char *units_set = get_environment_ptr( "MOTION_UNITS");
 
-   strlcpy_err( obuff, get_environment_ptr( "MOTION_UNITS"), 6);
-   if( !*obuff)
-      strlcpy_err( obuff, "'/hr", 6);
-   if( *obuff == '"')
-      motion_units = 60.;
-   else if( *obuff == 'd')
-      motion_units = 1. / 60.;
-   if( strstr( obuff, "/m"))
-      motion_units /= 60.;
-   else if( strstr( obuff, "/s"))
-      motion_units /= 3600.;
-   else if( strstr( obuff, "/d"))
-      motion_units *= 24.;
+   if( !*units_set)
+      units_set = "'/hr";
+   strlcpy_err( obuff, units_set, 7);
+   if( *obuff == 'm')
+      {
+      obuff++;
+      motion_units = 1000.;
+      }
+   switch( *obuff)
+      {
+      case '"':
+         motion_units *= 60.;
+         break;
+      case 'd':
+         motion_units /= 60.;
+         break;
+      default:
+         break;
+      }
+   assert( obuff[1] == '/');
+   motion_units *= seconds_per_time_unit_symbol( obuff + 2) / 3600.;
    return( motion_units);
 }
 
@@ -1579,19 +1583,22 @@ https://www.projectpluto.com/fo_usage#json_files for further
 information. */
 
 unsigned random_seed;
+double _mpc_standard_epoch = 0.;        /* see fo.cpp */
 
 FILE *open_json_file( char *filename, const char *env_ptr, const char *default_name,
                   const char *packed_desig, const char *permits)
 {
    char tbuff[100], full_permits[20];
 
+   if( _mpc_standard_epoch)       /* generating element files for MPC */
+      strlcpy_error( tbuff, "MPC_");
+   else
+      *tbuff = '\0';
 #ifdef _WIN32
-   strlcpy_error( tbuff, "WIN_");
+   strlcat_error( tbuff, "WIN_");
+#endif
    strlcat_error( tbuff, env_ptr);
    env_ptr = get_environment_ptr( tbuff);
-#else
-   env_ptr = get_environment_ptr( env_ptr);
-#endif
 
    if( !strcmp( env_ptr, "none"))
       return( NULL);
@@ -3593,7 +3600,7 @@ static int _ephemeris_in_a_file( const char *filename, const double *orbit,
 
                   alt_in_meters = find_lat_lon_alt( utc, geo, cinfo->planet, lat_lon,
                            *get_environment_ptr( "GEOMETRIC_GROUND_TRACK") == '1');
-                  snprintf( tbuff, 30, "%9.4f %+08.4f %10.3f",
+                  snprintf( tbuff, 31, "%9.4f %+08.4f %10.2f",
                         lat_lon[0] * 180. / PI,
                         lat_lon[1] * 180. / PI,
                         alt_in_meters / meters_per_km);
@@ -4678,7 +4685,7 @@ static int get_observer_details( const char *observation_filename,
             if( use_lines && !memcmp( buff, "MEA ", 4) && getting_measurers)
                tack_on_names( measurers, buff + 4);
             if( use_lines && !memcmp( buff, "TEL ", 4) && getting_scopes)
-               strlcpy_err( scope, buff + 4, 60);
+               strlcpy_err( scope, buff + 4, NAME_LIST_SIZE);
             if( !memcmp( buff, "COD ", 4))
                if( !get_details_from_here( buff, mpc_code, prog_codes))
                   new_code_found = true;

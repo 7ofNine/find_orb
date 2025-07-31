@@ -33,13 +33,7 @@ double geo_potential_in_au( const double x, const double y, const double z,
 #define PI 3.1415926535897932384626433832795028841971693993751058209749445923
 
 #ifdef __WATCOMC__
-   /* OpenWATCOM apparently lacks sqrtl()... : */
-static long double sqrtl( const long double ival)
-{
-   assert( ival > 0.);
-   return( (long double)sqrt( (double)ival));
-}
-   /* ...and we have a smaller stack to work with : */
+#define sqrtl sqrt
 #define N_TERMS 10
 #else
    /* Everyplace else,  we can go with a lot of spherical harmonic
