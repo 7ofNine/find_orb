@@ -32,7 +32,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 #include <windows.h>
 #endif
 #include <stdarg.h>
-#include <assert.h>
+#include "assert2.h"
 #include <errno.h>
 #include "watdefs.h"
 #include "details.h"
@@ -1165,11 +1165,11 @@ static bool try_artsat_xdesig( char *name)
       slen = strlen( name);
       if( max_out > slen)
          while( !found_a_match && fgets( tbuff, sizeof( tbuff), ifile))
-            if( !memcmp( tbuff + 20, name, slen) && tbuff[slen + 20] == ' ')
+            if( !memcmp( tbuff + 30, name, slen) && tbuff[slen + 30] == ' ')
                {
                found_a_match = true;
                snprintf_append( name, max_out - slen, " = NORAD %.5s = %.28s",
-                        tbuff + 1, tbuff + 48);
+                        tbuff + 1, tbuff + 58);
                remove_trailing_cr_lf( name);
                }
       fclose( ifile);
@@ -1677,6 +1677,8 @@ int object_type;
 int find_fcct_biases( const double ra, const double dec, const char catalog,
                  const double jd, double *bias_ra, double *bias_dec);
 
+#define valid_temp_desig_char( c)  (isalnum( c) || '-' == (c) || '_' == (c))
+
 static int parse_observation( OBSERVE FAR *obs, const char *buff)
 {
    unsigned time_format;
@@ -1702,7 +1704,7 @@ static int parse_observation( OBSERVE FAR *obs, const char *buff)
       {
       size_t i = 7;
 
-      while( i < 12 && isalnum( buff[i]))
+      while( i < 12 && valid_temp_desig_char( buff[i]))
          i++;
       while( i < 12 && buff[i] == ' ')
          i++;
@@ -3327,7 +3329,7 @@ static inline int extract_ades_sigmas( const char *buff,
 {
    int loc, rval = -1;
 
-   if( sscanf( buff, "%lf%n", posn1, &loc) == 1)
+   if( sscanf( buff, "%lf%n", posn2, &loc) == 1)
       {
       const char *tptr;
 
@@ -3335,7 +3337,7 @@ static inline int extract_ades_sigmas( const char *buff,
       *theta = 0.;
       if( buff[loc] == 'x')
          {
-         *posn2 = atof( buff + loc + 1);
+         *posn1 = atof( buff + loc + 1);
          while( buff[loc] > ' ' && buff[loc] != ',')
             loc++;
          if( buff[loc] == ',')
@@ -3344,11 +3346,10 @@ static inline int extract_ades_sigmas( const char *buff,
 
             convert_ades_sigmas_to_error_ellipse( *posn1, *posn2,
                               correlation, posn1, posn2, theta);
-            *theta = PI / 2. + *theta;
             }
          }
       else        /* circular position error */
-         *posn2 = *posn1;
+         *posn1 = *posn2;
       tptr = strstr( buff + loc, "m:");
       if( tptr)
          *mag_sigma = atof( tptr + 2);
@@ -3439,6 +3440,12 @@ single_observation_posn_sigma_1 looked too long to me.     */
    /* adjusted in 'environ.dat'.                                  */
 double maximum_observation_span = 200.;
 
+   /* The longest ADES line I've seen was about 570 bytes.  2000 bytes  */
+   /* ought to be enough for anyone.  (I may add error checks/warnings  */
+   /* here,  though.)                                                   */
+
+#define MAX_ADES_LINE_LEN 2000
+
 int sanity_check_observations = 1;
 bool use_sigmas = true;
 extern int is_interstellar;
@@ -3448,7 +3455,7 @@ OBSERVE FAR *load_observations( FILE *ifile, const char *packed_desig,
                            const int n_obs)
 {
    const double days_per_year = 365.25;
-   char buff[650], mpc_code_from_neocp[4], desig_from_neocp[15];
+   char buff[MAX_ADES_LINE_LEN], mpc_code_from_neocp[4], desig_from_neocp[15];
    char obj_name[80], curr_ades_ids[100];
    OBSERVE FAR *rval;
    bool including_obs = true;
@@ -4268,7 +4275,7 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
    int i, n = 0, n_alloced = 20, prev_loc = -1;
    const int fixing_trailing_and_leading_spaces =
                *get_environment_ptr( "FIX_OBSERVATIONS");
-   char buff[550], mpc_code_from_neocp[4], desig_from_neocp[15];
+   char buff[MAX_ADES_LINE_LEN], mpc_code_from_neocp[4], desig_from_neocp[15];
    void *ades_context;
    const clock_t t0 = clock( );
    int next_output = 2000, n_obs_read = 0;
@@ -4458,6 +4465,10 @@ OBJECT_INFO *find_objects_in_file( const char *filename,
          }
       if( !memcmp( buff, "#= ", 3))
          {
+         char *equals_ptr = strchr( buff + 3, '=');
+
+         if( equals_ptr)            /* if given multiple xrefs,  just */
+            *equals_ptr = '\0';     /* use the first one */
          *new_xdesig = '!';
          strlcpy( new_xdesig + 13, buff + 3, 20);
          strlcat( new_xdesig + 13, "            ", 14);
@@ -5130,16 +5141,19 @@ static void show_radar_info( char *buff, const OBSERVE *obs)
                rinfo.doppler_comp);
 }
 
-static size_t strip_trailing_zeroes( char *buff)
+static void strip_trailing_zeroes( char *buff)
 {
-   size_t i = strlen( buff);
+   buff = strchr( buff, '.');
+   if( buff)
+      {
+      size_t i = strlen( buff);
 
-   while( i && buff[i - 1] == '0')
-      i--;
-   if( i && buff[i - 1] == '.')
-      i--;
-   buff[i] = '\0';
-   return( i);
+      while( i && buff[i - 1] == '0')
+         i--;
+      if( i == 1)
+         i = 0;
+      buff[i] = '\0';
+      }
 }
 
 /* get_net_used_from_obs_header( ) looks through the observation header
@@ -5196,8 +5210,8 @@ static int generate_observation_text( const OBSERVE FAR *obs, const int idx,
    const double earth_sun = vector3_length( optr->obs_posn);
 
    *buff = '\0';
-   if( buffsize > 100)      /* no line should be larger than this, */
-      buffsize = 100;       /* even if the buffer does have room for it */
+   if( buffsize > 110)      /* no line should be larger than this, */
+      buffsize = 110;       /* even if the buffer does have room for it */
    switch( line_number)
       {
       case 0:
@@ -5364,22 +5378,27 @@ static int generate_observation_text( const OBSERVE FAR *obs, const int idx,
                   || optr->posn_sigma_1 != optr->posn_sigma_2)
             if( optr->note2 != 'R')
                {
-               int tilt_angle = 0;
                char sig1_buff[20], sig2_buff[20];
 
                snprintf_err( sig1_buff, sizeof( sig1_buff), "%.6f", optr->posn_sigma_1);
                remove_insignificant_digits( sig1_buff);
+               strip_trailing_zeroes( sig1_buff);
                snprintf_err( sig2_buff, sizeof( sig2_buff), "%.6f", optr->posn_sigma_2);
                remove_insignificant_digits( sig2_buff);
+               strip_trailing_zeroes( sig2_buff);
+               strlcpy_err( buff, "Sigma ", buffsize);
                if( strcmp( sig1_buff, sig2_buff))
                   {
-                  strlcat_err( sig1_buff, "x", sizeof( sig1_buff));
-                  strlcat_err( sig1_buff, sig2_buff, sizeof( sig1_buff));
-                  tilt_angle = (int)( optr->posn_sigma_theta * 180. / PI);
+                  const int tilt_angle =
+                               (int)( optr->posn_sigma_theta * 180. / PI) % 180;
+
+                  if( !tilt_angle)  /* PA=0 means sig1 = sigma(dec), sig2 = sigma(RA) */
+                      snprintf_append( buff, buffsize, "%sx%s\" ", sig2_buff, sig1_buff);
+                  else
+                      snprintf_append( buff, buffsize, "%sx%s\" %d ", sig1_buff, sig2_buff, tilt_angle);
                   }
-               snprintf_err( buff, buffsize, "Sigma %s\" ", sig1_buff);
-               if( tilt_angle % 180)
-                  snprintf_append( buff, buffsize, "%d ", tilt_angle);
+               else
+                  snprintf_append( buff, buffsize, "%s\" ", sig1_buff);
                }
          end_ptr = buff + strlen( buff);
          reference_to_text( end_ptr, 15, optr->reference, optr->jd);

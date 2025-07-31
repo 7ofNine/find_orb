@@ -235,6 +235,7 @@ char *make_config_dir_name( char *oname, const char *iname);    /* miscell.cpp *
 int reset_astrometry_filename( int *argc, const char **argv);
 int set_language( const int language);                      /* elem_out.cpp */
 static void show_splash_screen( void);
+static void show_splash_screen_and_wait( void);
 void shellsort_r( void *base, const size_t n_elements, const size_t esize,
          int (*compare)(const void *, const void *, void *), void *context);
 static int count_wide_chars_in_utf8_string( const char *iptr, const char *endptr);
@@ -259,6 +260,9 @@ int load_ephemeris_settings( ephem_option_t *ephemeris_output_options,
       int *n_steps, char *obscode, char *step_size, char *ephem_start,
       const char *config);                               /* elem_out.cpp */
 void compute_effective_solar_multiplier( const char *constraints);  /* runge.c */
+double find_kreutz_orbit( OBSERVE FAR *obs, int n_obs, double *orbit,
+                  const double q);  /* orb_func.c */
+void reset_sr_orbits( void);                             /* elem_out.cpp */
 
 #ifdef __cplusplus
 extern "C" {
@@ -368,9 +372,9 @@ is commented out by default. */
 #ifdef __WATCOMC__
 #undef endwin
 extern "C" {
-PDCEX  int     endwin_u64_4302(void);
+PDCEX  int     endwin_u64_4400(void);
 }
-#define endwin endwin_u64_4302
+#define endwin endwin_u64_4400
 #endif
 
 static int full_endwin( void)
@@ -873,8 +877,9 @@ static void select_angular_motion_units( void)
       }
    c = inquire( buff, NULL, 0, COLOR_DEFAULT_INQUIRY);
    if( c >= '0' && c < '9')
-      c += KEY_F( 1) - '1';
-   c -= KEY_F( 0);
+      c -= '0';
+   else
+      c -= KEY_F( 1);
    if( c >= 0)
       {
       tptr = buff;
@@ -1778,11 +1783,12 @@ int select_object_in_file( OBJECT_INFO *ids, const int n_ids)
             }
          put_colored_text( "[?]", 0, xmax - 4, 3,
                               A_REVERSE | COLOR_BACKGROUND);
+         put_colored_text( "Open...", n_lines + 1, x0 + 12, 7, COLOR_HIGHLIT_BUTTON);
+         put_colored_text( "About", n_lines + 1, x0 + 6, 5, COLOR_HIGHLIT_BUTTON);
+         put_colored_text( "HELP", n_lines + 1, x0 + 20, 4, COLOR_HIGHLIT_BUTTON);
          if( *search_text)
             put_colored_text( search_text, n_lines + 1, x0,
                       (int)strlen( search_text), COLOR_FINAL_LINE);
-         put_colored_text( "Open...", n_lines + 1, x0 + 12, 7, COLOR_HIGHLIT_BUTTON);
-         put_colored_text( "HELP", n_lines + 1, x0 + 20, 4, COLOR_HIGHLIT_BUTTON);
          flushinp( );
          do
             {
@@ -1790,10 +1796,11 @@ int select_object_in_file( OBJECT_INFO *ids, const int n_ids)
             err_message = 0;
             if( c == KEY_MOUSE)
                {
-               int x, y, z;
+               int x, y, z, dx;
                mmask_t button;
 
                get_mouse_data( &x, &y, &z, &button);
+               dx = x - x0;
                if( button & REPORT_MOUSE_POSITION)
                   c = 0;
                else if( button & BUTTON4_PRESSED)   /* actually 'wheel up' */
@@ -1804,14 +1811,17 @@ int select_object_in_file( OBJECT_INFO *ids, const int n_ids)
                   c = '?';                 /* clicked on [?] at upper right */
                else if( y < n_lines)
                   choice = curr_page + y + (x / column_width) * n_lines;
-               else if( y == n_lines + 1 && x >= x0 - 12 && x < x0 + 19)
-                  c = ALT_F;           /* clicked on 'Open...' */
-               else if( y == n_lines + 1 || y == n_lines)
-                  c = '?';
-               else if( y == n_lines + 2 && x >= x0)
+               else if( y == n_lines + 1 && dx >= 6)
                   {
-                  const int dx = x - x0;
-
+                  if( dx >= 19)
+                     c = '?';           /* clicked on 'HELP' */
+                  else if( dx >= 11)
+                     c = ALT_F;           /* clicked on 'Open...' */
+                  else
+                     c = '.';           /* clicked on 'About' */
+                  }
+               else if( y == n_lines + 2 && dx > 0)
+                  {
                   if( dx >= 20)
                      c = 27;          /* quit */
                   else if( dx >= 15)
@@ -1831,7 +1841,7 @@ int select_object_in_file( OBJECT_INFO *ids, const int n_ids)
             c = 8;
                      /* if a letter/number is hit,  look for an obj that */
                      /* starts with that letter/number: */
-         if( (c >= ' ' && c <= 'z' && c != '?') || c == 8)
+         if( (c >= ' ' && c <= 'z' && c != '?' && c != '.') || c == 8)
             {
             size_t len = strlen( search_text);
 
@@ -1871,6 +1881,9 @@ int select_object_in_file( OBJECT_INFO *ids, const int n_ids)
 #endif
          switch( c)
             {
+            case '.':
+               show_splash_screen_and_wait( );
+               break;
             case '?':
                show_a_file( "obj_help.txt", 0);
                break;
@@ -2375,6 +2388,7 @@ static void show_one_observation( OBSERVE obs, const int line,
    int color = COLOR_BACKGROUND;       /* show in 80-column MPC */
    char resid_data[70];      /* format, w/added data if it fits */
    const int dropped_start = 12;     /* ...but omit designation */
+   size_t i, len;
 
    put_colored_text( "", line, 0, -1, COLOR_BACKGROUND);
    add_to_mpc_color( obs.mpc_code, 1000);
@@ -2409,7 +2423,10 @@ static void show_one_observation( OBSERVE obs, const int line,
                      /* show corresponding 1s or 0.1s HHMMSS fmt */
    recreate_observation_line( buff, &obs, residual_format);
    assert( 80 == strlen( buff));
-   memmove( buff, buff + dropped_start, strlen( buff + dropped_start) + 1);
+   len = strlen( buff + dropped_start) + 1;
+   for( i = 0; i < len; i++)
+      buff[i] = buff[i + dropped_start];
+/* memmove( buff, buff + dropped_start, strlen( buff + dropped_start) + 1);   */
    strcat( buff, resid_data);
    if( obs.flags & OBS_IS_SELECTED)
       color = COLOR_SELECTED_OBS;
@@ -3193,29 +3210,30 @@ static int *get_key_remap_table( void)
 
 static SCREEN *screen_ptr;
 
-static inline int initialize_curses( const int argc, const char **argv)
+static inline int initialize_curses( void)
 {
 #ifdef __PDCURSES__
    ttytype[0] = 20;    /* Window must have at least 20 lines in Win32a */
    ttytype[1] = 55;    /* Window can have a max of 55 lines in Win32a */
    ttytype[2] = 70;    /* Window must have at least 70 columns in Win32a */
    ttytype[3] = (char)200; /* Window can have a max of 200 columns in Win32a */
-#else
-   PDC_set_title( get_find_orb_text( 18));
-#endif
 
+   PDC_set_title( get_find_orb_text( 18));
 #ifdef XCURSES
    resize_term( 50, 98);
-   Xinitscr( argc, (char **)argv);
-   screen_ptr = SP;
-#else
-   INTENTIONALLY_UNUSED_PARAMETER( argc);
-   INTENTIONALLY_UNUSED_PARAMETER( argv);
+#endif
+   screen_ptr = newterm( NULL, stdout, stdin);
+#else             /* not PDCurses,  assume ncurses */
 
-   char xterm_256color_name[20];
+   screen_ptr = NULL;
+   if( !force_eight_color_mode)
+      {
+      char xterm_256color_name[20];
 
-   strlcpy_error( xterm_256color_name, "xterm-256color");
-   if( force_eight_color_mode || !(screen_ptr = newterm( xterm_256color_name, stdout, stdin)))
+      strlcpy_error( xterm_256color_name, "xterm-256color");
+      screen_ptr = newterm( xterm_256color_name, stdout, stdin);
+      }
+   if( !screen_ptr)
       screen_ptr = newterm( NULL, stdout, stdin);
 #endif
    if( debug_level > 2)
@@ -3672,7 +3690,7 @@ static int non_grav_menu( char *message_to_user)
    _set_radio_button( buff, (int)i);
    help_file_name = "nongravs.txt";
    c = full_inquire( buff, NULL, 0, COLOR_MENU, -1, -1);
-   if( c >= KEY_F(1) && c <= KEY_F(8))
+   if( c >= KEY_F(1) && c <= KEY_F(9))
       c -= KEY_F( 1);
    else
       c -= '0';
@@ -3885,6 +3903,20 @@ static void show_splash_screen( void)
       doupdate( );
       fclose( ifile);
       }
+}
+
+static void show_splash_screen_and_wait( void)
+{
+#ifdef MOUSE_MOVEMENT_EVENTS_ENABLED
+   mousemask( default_mouse_events, NULL);
+#endif
+   do
+      {
+      show_splash_screen( );
+      } while( KEY_RESIZE == extended_getch( ));
+#ifdef MOUSE_MOVEMENT_EVENTS_ENABLED
+   mousemask( default_mouse_events | REPORT_MOUSE_POSITION, NULL);
+#endif
 }
 
 static int find_command_area( const unsigned mouse_x, const unsigned mouse_y,
@@ -4293,7 +4325,7 @@ int main( int argc, const char **argv)
       debug_printf( "%d sigma recs read\n", i);
    key_remaps = get_key_remap_table( );
 
-   initialize_curses( argc, argv);
+   initialize_curses( );
 
    *message_to_user = '\0';
    while( !quit)
@@ -5236,6 +5268,7 @@ int main( int argc, const char **argv)
             if( *message_to_user)      /* new force model selected */
                {
                extern int force_model;
+               char *delta_v = NULL;
 
                for( i = 6; i < n_orbit_params; i++)
                   orbit[i] = 0.;
@@ -5243,10 +5276,17 @@ int main( int argc, const char **argv)
                   {        /* we need a starting estimate of the maneuver time */
                   if( !inquire( get_find_orb_text( 2099), tbuff, sizeof( tbuff),
                             COLOR_DEFAULT_INQUIRY) && *tbuff)
+                     {
+                     delta_v = strstr( tbuff, "v=");
+                     if( delta_v)
+                        *delta_v = '\0';
                      orbit[9] = get_time_from_string( obs->jd, tbuff,
                              FULL_CTIME_YMD | CALENDAR_JULIAN_GREGORIAN, NULL);
+                     }
                   if( orbit[9] < obs->jd || orbit[9] > obs[n_obs - 1].jd)
                      force_model = FORCE_MODEL_NO_NONGRAVS;
+                  else if( delta_v)
+                     sscanf( delta_v + 2, "%lf,%lf,%lf", orbit + 6, orbit + 7, orbit + 8);
                   }
                }
             break;
@@ -6515,9 +6555,26 @@ int main( int argc, const char **argv)
             update_element_display = 1;
             break;
          case ALT_G:
-            orbital_monte_carlo( orbit, obs, n_obs, curr_epoch, epoch_shown);
-            update_element_display = 1;
-            strlcpy_error( message_to_user, "Orbital MC generated");
+            if( !inquire( get_find_orb_text( 2101),
+                               tbuff, sizeof( tbuff), COLOR_DEFAULT_INQUIRY))
+               {
+               const unsigned new_n_orbits = atoi( tbuff);
+
+               if( new_n_orbits)
+                  {
+                  extern unsigned max_n_sr_orbits;
+
+                  if( max_n_sr_orbits < new_n_orbits)
+                     {
+                     max_n_sr_orbits = new_n_orbits;
+                     reset_sr_orbits( );
+                     }
+                  orbital_monte_carlo( orbit, obs, n_obs, curr_epoch, epoch_shown);
+                  update_element_display = 1;
+                  strlcpy_error( message_to_user, "Orbital MC generated");
+                  }
+               }
+            break;
             break;
          case ALT_I:
             {
@@ -6672,17 +6729,7 @@ int main( int argc, const char **argv)
             show_calendar( );
             break;
          case '.':
-            show_splash_screen( );     /* just to test */
-            do
-               {
-               c = extended_getch( );
-               if( c == KEY_MOUSE)
-                  {
-                  get_mouse_data( (int *)&mouse_x, (int *)&mouse_y, (int *)&mouse_z, &button);
-                  if( button & REPORT_MOUSE_POSITION)
-                     c = 0;         /* ignore mouse moves */
-                  }
-               } while( !c);
+            show_splash_screen_and_wait( );     /* just to test */
             break;
          case ALT_Y:
             {
@@ -6732,6 +6779,18 @@ int main( int argc, const char **argv)
             }
             break;
          case '\\':
+            if( !inquire( "Enter Kreutz perihelion distance:",
+                       tbuff, sizeof( tbuff), COLOR_DEFAULT_INQUIRY) && *tbuff)
+               {
+               const double r = find_kreutz_orbit( obs + curr_obs, 1, orbit, atof( tbuff));
+
+               snprintf_err( message_to_user, sizeof( message_to_user),
+                       "Kreutz r = %f AU", r);
+               curr_epoch = obs[curr_obs].jd - r / AU_PER_DAY;
+               set_locs( orbit, curr_epoch, obs, n_obs);
+               update_element_display = 1;
+               }
+            break;
          case 'O':
          case ';': case ']':
          case CTRL( 'E'): case CTRL( 'J'): case CTRL( 'L'):
