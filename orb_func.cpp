@@ -53,7 +53,8 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA
 int snprintf( char *string, const size_t max_len, const char *format, ...);
 #endif
 
-#ifdef __WATCOMC__
+#if( __cplusplus < 201103L)
+         /* i.e.,  pre-C99 or pre-C++11 standard,  lacking long double funcs */
 #define sqrtl sqrt
 #define powl pow
 #define fabsl fabs
@@ -318,8 +319,8 @@ long double take_rk_stepl( const long double jd, ELEMENTS *ref_orbit,
 long double take_pd89_step( const long double jd, ELEMENTS *ref_orbit,
                  const long double *ival, long double *ovals,
                  const int n_vals, const long double step);    /* runge.cpp */
-int symplectic_6( double jd, ELEMENTS *ref_orbit, double *vect,
-                                          const double dt);
+int symplectic_6( long double jd, ELEMENTS *ref_orbit, long double *vect,
+                                          const long double dt);   /* runge.cpp */
 static int is_unreasonable_orbit( const double *orbit);     /* orb_func.cpp */
 static int is_unreasonable_orbitl( const long double *orbit);
 
@@ -543,11 +544,9 @@ int integrate_orbitl( long double *orbit, const long double t0, const long doubl
 
       switch( integration_method)
          {
-#ifdef NOT_READY_FOR_LONG_DOUBLES
          case 1:
             symplectic_6( t, &ref_orbit, orbit, delta_t);
             break;
-#endif
          case 0:
          default:
             {
@@ -2643,8 +2642,9 @@ void compute_error_ellipse_adjusted_for_motion( double *sigma1, double *sigma2,
    *sigma1 = obs->posn_sigma_1;    /* start with "non-moving" error ellipse */
    *sigma2 = obs->posn_sigma_2;
    *posn_angle = obs->posn_sigma_theta;
-   adjust_error_ellipse_for_timing_error( sigma1, sigma2, posn_angle,
-                  dx, dy);
+   if( !(obs->flags & OBS_NO_VELOCITY))
+      adjust_error_ellipse_for_timing_error( sigma1, sigma2, posn_angle,
+                       dx, dy);
 }
 
 int get_residual_data( const OBSERVE *obs, double *xresid, double *yresid)
@@ -2681,10 +2681,10 @@ int get_residual_data( const OBSERVE *obs, double *xresid, double *yresid)
                   &tilt, obs, &m);
          cos_tilt = cos( tilt);
          sin_tilt = sin( tilt);
-         *xresid = (cos_tilt * m.xresid - sin_tilt * m.yresid);
-         *xresid /= sigma_2;
-         *yresid = (sin_tilt * m.xresid + cos_tilt * m.yresid);
-         *yresid /= sigma_1;
+         *xresid = (sin_tilt * m.xresid + cos_tilt * m.yresid);
+         *xresid /= sigma_1;
+         *yresid = (cos_tilt * m.xresid - sin_tilt * m.yresid);
+         *yresid /= sigma_2;
          n_residuals = 2;
          }
       }
@@ -2753,9 +2753,7 @@ int full_improvement( OBSERVE FAR *obs, int n_obs, double *orbit,
    double *asteroid_mass = ((limited_orbit && *limited_orbit == 'm') ?
                get_asteroid_mass( atoi( limited_orbit + 2)) : NULL);
    int n_params;
-   void *lsquare;
-   double FAR *xresids;
-   double FAR *yresids;
+   void *lsquare = NULL;
    double FAR *slopes;
    double constraint_slope[MAX_CONSTRAINTS][MAX_N_PARAMS];
    double element_slopes[MAX_N_PARAMS][MONTE_N_ENTRIES];
@@ -2913,9 +2911,7 @@ int full_improvement( OBSERVE FAR *obs, int n_obs, double *orbit,
    put_orbital_elements_in_array_form( &elem, elements_in_array);
 
    uncertainty_parameter = 99.;
-   xresids = (double FAR *)FCALLOC( (2 + 2 * n_params) * n_obs + n_params, sizeof( double));
-   yresids = xresids + n_obs;
-   slopes = yresids + n_obs;
+   slopes = (double FAR *)FCALLOC( 2 * n_params * n_obs + n_params, sizeof( double));
 
    before_rms = compute_rms( obs, n_obs);
    if( limited_orbit && *limited_orbit == 'R')
@@ -2923,8 +2919,6 @@ int full_improvement( OBSERVE FAR *obs, int n_obs, double *orbit,
               r_mult * (dotted_dist( obs + n_obs - 1) - atof( limited_orbit + 2));
 
    snprintf_err( tstr, sizeof( tstr), "fi/locs set: %f  ", JD_TO_YEAR( epoch));
-   for( i = 0; i < n_obs; i++)
-      get_residual_data( obs + i, xresids + i, yresids + i);
 
              /* 'integration_length' = maximum time span over which we'll */
              /* be integrating,  from the working epoch to either the first */
@@ -3011,7 +3005,7 @@ int full_improvement( OBSERVE FAR *obs, int n_obs, double *orbit,
             {
             memcpy( obs, orig_obs, n_obs * sizeof( OBSERVE));
             free( orig_obs);
-            free( xresids);
+            free( slopes);
             memcpy( orbit, original_orbit, n_orbit_params * sizeof( double));
             return( -8);
             }
@@ -3063,7 +3057,7 @@ int full_improvement( OBSERVE FAR *obs, int n_obs, double *orbit,
             set_locs_rval = set_locs( tweaked_orbit, epoch, obs, n_obs);
             if( set_locs_rval == USER_INTERRUPTED)
                {
-               free( xresids);
+               free( slopes);
                free( orig_obs);
                memcpy( orbit, original_orbit, n_orbit_params * sizeof( double));
                runtime_message = NULL;
@@ -3145,113 +3139,120 @@ int full_improvement( OBSERVE FAR *obs, int n_obs, double *orbit,
          }
       }
    memcpy( obs, orig_obs, n_obs * sizeof( OBSERVE));
-   free( orig_obs);
    if( err_code)
       {
-      free( xresids);
+      free( slopes);
+      free( orig_obs);
       memcpy( orbit, original_orbit, n_orbit_params * sizeof( double));
       return( -1);
       }
 
-   lsquare = lsquare_init( n_params);
-   assert( lsquare);
-   if( debug_level > 1)
-      debug_printf( "Adding obs to lsquare\n");
-   for( i = 0; i < n_obs; i++)
-      if( obs[i].is_included)
-         {
-         double loc_vals[22], weight = 1.;
-         const double xresid = xresids[i];
-         const double yresid = yresids[i];      /* all in _radians_ */
-         const double resid2 = xresid * xresid + yresid * yresid;
-
-         if( !(obs[i].flags & OBS_ALREADY_CORRECTED_FOR_OVEROBSERVING))
+   for( int loop = atoi( get_environment_ptr( "LS_ITERATIONS")); !err_code && loop >= 0; loop--)
+      {
+      lsquare = lsquare_init( n_params);
+      assert( lsquare);
+      if( debug_level > 1)
+         debug_printf( "Adding obs to lsquare\n");
+      for( i = 0; i < n_obs; i++)
+         if( obs[i].is_included)
             {
-            if( use_blunder_method == 2 && probability_of_blunder)
-               weight = reweight_for_blunders( resid2, weight);
-            if( overobserving_time_span && overobserving_ceiling)
-               weight *= reweight_for_overobserving( obs, n_obs, i);
+            double loc_vals[22], weight = 1.;
+            double xresid, yresid, resid2;
+
+            get_residual_data( obs + i, &xresid, &yresid);
+            resid2 = xresid * xresid + yresid * yresid;
+
+            if( !(obs[i].flags & OBS_ALREADY_CORRECTED_FOR_OVEROBSERVING))
+               {
+               if( use_blunder_method == 2 && probability_of_blunder)
+                  weight = reweight_for_blunders( resid2, weight);
+               if( overobserving_time_span && overobserving_ceiling)
+                  weight *= reweight_for_overobserving( obs, n_obs, i);
+               }
+            FMEMCPY( loc_vals, slopes + i * 2 * n_params,
+                                            2 * n_params * sizeof( double));
+            lsquare_add_observation( lsquare, xresid, weight, loc_vals);
+            lsquare_add_observation( lsquare, yresid, weight, loc_vals + n_params);
+            sigma_squared += weight * weight * (resid2 + 1.);
             }
-         FMEMCPY( loc_vals, slopes + i * 2 * n_params,
-                                         2 * n_params * sizeof( double));
-         lsquare_add_observation( lsquare, xresid, weight, loc_vals);
-         lsquare_add_observation( lsquare, yresid, weight, loc_vals + n_params);
-         sigma_squared += weight * weight * (resid2 + 1.);
-         }
-   i = n_included_observations * 2 - n_params;
-   if( i > 0)
-      sigma_squared /= (double)i;
+      i = n_included_observations * 2 - n_params;
+      if( i > 0)
+         sigma_squared /= (double)i;
 
-   if( limited_orbit)
-      for( j = 0; j < n_constraints; j++)
-         lsquare_add_observation( lsquare, constraint[j], 1.,
-                                            constraint_slope[j]);
+      if( limited_orbit)
+         for( j = 0; j < n_constraints; j++)
+            lsquare_add_observation( lsquare, constraint[j], 1.,
+                                               constraint_slope[j]);
 
-   if( debug_level > 1)
-      debug_printf( "lsquare solve\n");
-   if( !err_code)
-      {
-      err_code = lsquare_solve( lsquare, differences);
-      if( err_code)
-         debug_printf( "Failure in lsquare_solve: %d\n", err_code);
-      }
-
-   for( i = 0; !err_code && i < 6 && i < n_params; i++)
-      for( j = 0; j < 6; j++)
+      if( debug_level > 1)
+         debug_printf( "lsquare solve\n");
+      if( !err_code)
          {
-         double max_difference = obs->r * .7, ratio;
-
-         if( j > 2)     /* velocity component */
-            max_difference /= (obs[n_obs - 1].jd - obs[0].jd) * .5;
-         if( i == j)
-            ratio = fabs( differences[i] / max_difference);
-         else
-            ratio = 0.;
-         if( ratio > scale_factor)
-            scale_factor = ratio;
+         err_code = lsquare_solve( lsquare, differences);
+         if( err_code)
+            debug_printf( "Failure in lsquare_solve: %d\n", err_code);
          }
-   if( debug_level > 1)
-      debug_printf( "lsquare computed\n");
-   memcpy( orbit2, orbit, 6 * sizeof( double));
-   for( i = 0; i < n_params && !err_code; i++)
-      {
-      if( i == 6 && asteroid_mass)
-         *asteroid_mass += differences[i] / scale_factor;
-      else
-         _tweak_orbit( orbit, i, differences[i] / scale_factor, n_params);
-      if( i == 5)    /* is our new 'orbit' state vector reasonable?  */
-         err_code = is_unreasonable_orbit( orbit);
-      }
-               /* If the orbit "blew up" or otherwise failed,  restore */
-               /* the original version:  */
-   if( err_code || is_unreasonable_orbit( orbit))
-      debug_printf( "Failed full step: %d: %s\n", err_code, obs->packed_id);
-   snprintf_err( tstr, sizeof( tstr), "Final setting of orbit    ");
-   i = 6;      /* possibly try six half-steps */
-   do
-      {
-      if( setting_outside_of_arc)
-         err_code = set_locs( orbit, epoch, obs - n_skipped_obs, n_total_obs);
-      else
-         err_code = set_locs( orbit, epoch, obs, n_obs);
-      if( *get_environment_ptr( "HALF_STEPS"))
-         {
-         const double after_rms = compute_rms( obs, n_obs);
 
-         snprintf_err( tstr, sizeof( tstr), "Half-stepping %d\n", 7 - i);
-         if( after_rms > before_rms * 1.5 && !limited_orbit)
+      for( i = 0; !err_code && i < 6 && i < n_params; i++)
+         for( j = 0; j < 6; j++)
             {
-            for( j = 0; j < n_orbit_params; j++)
-               orbit[j] = (orbit[j] + orbit2[j]) * .5;
-            i--;
+            double max_difference = obs->r * .7, ratio;
+
+            if( j > 2)     /* velocity component */
+               max_difference /= (obs[n_obs - 1].jd - obs[0].jd) * .5;
+            if( i == j)
+               ratio = fabs( differences[i] / max_difference);
+            else
+               ratio = 0.;
+            if( ratio > scale_factor)
+               scale_factor = ratio;
+            }
+      if( debug_level > 1)
+         debug_printf( "lsquare computed\n");
+      memcpy( orbit2, orbit, 6 * sizeof( double));
+      for( i = 0; i < n_params && !err_code; i++)
+         {
+         if( i == 6 && asteroid_mass)
+            *asteroid_mass += differences[i] / scale_factor;
+         else
+            _tweak_orbit( orbit, i, differences[i] / scale_factor, n_params);
+         if( i == 5)    /* is our new 'orbit' state vector reasonable?  */
+            err_code = is_unreasonable_orbit( orbit);
+         }
+                  /* If the orbit "blew up" or otherwise failed,  restore */
+                  /* the original version:  */
+      if( err_code || is_unreasonable_orbit( orbit))
+         debug_printf( "Failed full step: %d: %s\n", err_code, obs->packed_id);
+      snprintf_err( tstr, sizeof( tstr), "Final setting of orbit    ");
+      i = 6;      /* possibly try six half-steps */
+      do
+         {
+         if( !loop && setting_outside_of_arc)
+            err_code = set_locs( orbit, epoch, obs - n_skipped_obs, n_total_obs);
+         else
+            err_code = set_locs( orbit, epoch, obs, n_obs);
+         if( *get_environment_ptr( "HALF_STEPS"))
+            {
+            const double after_rms = compute_rms( obs, n_obs);
+
+            snprintf_err( tstr, sizeof( tstr), "Half-stepping %d\n", 7 - i);
+            if( after_rms > before_rms * 1.5 && !limited_orbit)
+               {
+               for( j = 0; j < n_orbit_params; j++)
+                  orbit[j] = (orbit[j] + orbit2[j]) * .5;
+               i--;
+               }
+            else
+               i = 0;
             }
          else
             i = 0;
          }
-      else
-         i = 0;
+         while( !err_code && i);
+      if( loop && !err_code)
+         lsquare_free( lsquare);
       }
-      while( !err_code && i);
+   free( orig_obs);
 
    if( debug_level > 1)
       debug_printf( "full_improve done\n");
@@ -3471,7 +3472,7 @@ int full_improvement( OBSERVE FAR *obs, int n_obs, double *orbit,
       available_sigmas_hash = compute_available_sigmas_hash( obs, n_obs, epoch2,
                   perturbers, planet_orbiting);
       }
-   FFREE( xresids);
+   FFREE( slopes);
    lsquare_free( lsquare);
 
    if( levenberg_marquardt_lambda)
@@ -3903,6 +3904,125 @@ bool is_sungrazing_comet( const OBSERVE *obs, const int n_obs)
                       || !strcmp( obs[i].mpc_code, "C50")))
       i++;
    return( i == n_obs);    /* all obs are from SOHO or STEREOs */
+}
+
+int solve_quadratic( const double a, const double b, const double c,
+                     double *low, double *high)
+{
+   const double discr = b * b - 4. * a * c;
+
+   int rval;
+
+   if( discr >= 0)
+      {
+      const double sqrt_discr = sqrt( discr);
+      if( low)
+         *low = (-b - sqrt_discr) / (2. * a);
+      if( high)
+         *high = (-b + sqrt_discr) / (2. * a);
+      rval = 1;
+      }
+   else
+      rval = 0;
+   return( rval);
+}
+
+/* Kreutz comets all have basically parabolic orbits with very similar
+perihelion directions.  They effectively "fall from infinity" from
+ecliptic longitude 102.81, latitude -35.22,  and therefore come to
+perihelion at ecliptic longitude 182.81,  latitude +35.22.  The
+perihelion distance ranges from slightly inside the sun to about 0.01 AU.
+
+   For a given perihelion distance,  the orbit will lie on a paraboloid
+of revolution around the line described by the above ecliptic lat/lon.
+In a coordinate system in which the x-axis points to the perihelion
+point,  such that the perihelion point is at (q, 0, 0), the equation for
+the paraboloid of revolution around the x-axis will be
+
+4q(q-x) = (y^2 + z^2)
+
+   One optical observation will require that the object be at a certain
+point along a ray,  starting at the observer's location and pointed
+along the RA/dec of the observation.  Let's say that,  in the rotated
+system,  the observation describes a ray
+
+x = x0 + vx * d
+y = y0 + vy * d
+z = z0 + vz * d
+
+   where (vx, vy, vz) is a unit vector and d is the distance from the
+observer to the comet.  The intersection of this ray with the above
+paraboloid will happen when
+
+4q( q - x0 - vx * d) = (y0 + vy * d)^2 + (z0 + vz * d)^2
+
+(vy^2 + vz^2) * d^2 + (2(y0 * vy + z0 * vz) + 4q * vx)d + (y0^2 + z0^2 + 4q( x0 - q))
+
+   So we have a quadratic in d.  That will give us the two distances along
+the ray that pass through the paraboloid.  (Or the quadratic will have no
+real roots,  telling us that the ray misses the paraboloid.  In that case,
+we can only return "sorry,  no such orbit is possible.")
+
+   For each distance,  we can compute (x, y, z) as given above,  and
+therefore the distance from the sun,  and therefore the speed for an object
+in a parabolic orbit v = sqrt( 2GM/r).  The direction of the velocity
+vector should bisect the vectors toward the sun and the perihelion vector
+'perih_vect' computed at the start of this exercise.  (In theory,  it could
+bisect "the long way",  resulting in a velocity vector pointed away from
+the sun.  But we rarely see Kreutz comets after perihelion;  taking the
+vector pointing toward the sun is a perfectly reasonable assumption.)
+
+   Both of the two roots will produce parabolic orbits that take the object
+from the observation point to the perihelion point (q, 0, 0).  The Kreutz
+comets tend to lie in the same plane,  but it's a little risky to rely on
+that;  there is considerable rotation around it,  and when the roots of the
+quadratic are close together (i.e.,  the "ray" described by the observation
+just barely intersects the paraboloid),  you might find that both roots
+seem plausible. Our best guide is probably just to look at the resulting
+residuals for the other observations. */
+
+double find_kreutz_orbit( OBSERVE FAR *obs, int n_obs, double *orbit,
+                       const double q)
+{
+   const double ecl_lon = 282.81 * PI / 180.;
+   const double ecl_lat = 35.22 * PI / 180.;
+   double basis[3][3], perih_vect[3], loc[3], vel[3], a, b, c, dist[2];
+   double rval = 0.;
+   size_t i;
+
+   INTENTIONALLY_UNUSED_PARAMETER( n_obs);
+   polar3_to_cartesian( perih_vect, ecl_lon, ecl_lat);
+   generate_orthonormal_basis( basis[0], basis[1], basis[2], perih_vect);
+   for( i = 0; i < 3; i++)
+      {
+      loc[i] = dot_product( basis[i], obs->obs_posn);
+      vel[i] = dot_product( basis[i], obs->vect);
+      }
+   a = vel[1] * vel[1] + vel[2] * vel[2];
+   b = 2. * (loc[1] * vel[1] + loc[2] * vel[2]) + 4. * q * vel[0];
+   c = loc[1] * loc[1] + loc[2] * loc[2] + 4. * q * (loc[0] - q);
+   if( solve_quadratic( a, b, c, dist, dist + 1))
+      {
+      static int choice;
+
+      debug_printf( "distances %f %f\n", dist[0], dist[1]);
+      rval = dist[choice ^= 1];
+      if( orbit)
+         {
+         double r, renormalize;
+
+         for( i = 0; i < 3; i++)
+            orbit[i] = obs->obs_posn[i] + rval * obs->vect[i];
+         r = vector3_length( orbit);
+         for( i = 0; i < 3; i++)
+            orbit[i + 3] = perih_vect[i] - orbit[i] / r;
+         renormalize = sqrt( 2. * SOLAR_GM / r);
+         renormalize /= vector3_length( orbit + 3);
+         for( i = 0; i < 3; i++)
+            orbit[i + 3] *= renormalize;
+         }
+      }
+   return( rval);
 }
 
 static double find_sungrazer_orbit( OBSERVE FAR *obs, int n_obs, double *orbit)
@@ -4386,24 +4506,16 @@ int orbital_monte_carlo( const double *orbit, OBSERVE *obs, const int n_obs,
    for( i = 0; i < n_sr_orbits; i++)
       {
       double *torbit = sr_orbits + i * n_orbit_params;
-      const double sig_squared = generate_mc_variant_from_covariance( torbit, orbit);
-      const char *format_str = "%+17.6f %+17.6f %+17.6f %+14.12f %+14.12f %+14.12f\n";
 
-      if( i < 1000)
-         {
-         double rms;
-         int n_resids;
-
-         set_locs( torbit, curr_epoch, obs, n_obs);
-         rms = compute_weighted_rms( obs, n_obs, &n_resids);
-         debug_printf( "Var %4d: %9.6f %.8f\n", i, sig_squared,
-                        rms * rms * n_resids);
-         }
+      generate_mc_variant_from_covariance( torbit, orbit);
       integrate_orbit( torbit, curr_epoch, epoch_shown);
       write_out_elements_to_file( torbit, epoch_shown, epoch_shown,
            obs, n_obs, "", 6, 1, ELEM_OUT_ALTERNATIVE_FORMAT | ELEM_OUT_NO_COMMENT_DATA);
       append_elements_to_element_file = 1;
       if( ofile)
+         {
+         const char *format_str = "%+17.6f %+17.6f %+17.6f %+14.12f %+14.12f %+14.12f\n";
+
          fprintf( ofile, format_str,
                torbit[0] * AU_IN_KM,
                torbit[1] * AU_IN_KM,
@@ -4411,6 +4523,7 @@ int orbital_monte_carlo( const double *orbit, OBSERVE *obs, const int n_obs,
                torbit[3] * AU_IN_KM / seconds_per_day,
                torbit[4] * AU_IN_KM / seconds_per_day,
                torbit[5] * AU_IN_KM / seconds_per_day);
+         }
       }
    if( ofile)
       fclose( ofile);
@@ -4937,6 +5050,7 @@ int detect_perturbers( const double jd, const double * __restrict xyz,
 int clean_up_find_orb_memory( void)
 {
    extern char *temp_obs_filename;     /* miscell.cpp */
+   extern char *mpec_error_message;
 
    free_sigma_recs( );
    get_observer_data( NULL, NULL, NULL);
@@ -4975,5 +5089,7 @@ int clean_up_find_orb_memory( void)
    _unlink( temp_obs_filename);
 #endif
    free( temp_obs_filename);
+   free( mpec_error_message);
+   mpec_error_message = NULL;
    return( 0);
 }
